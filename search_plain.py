@@ -1,71 +1,101 @@
-import json
+import argparse
 import httplib
-#import requests
+import json
+import zlib
 
-from urllib import urlencode
-import urllib2
+def readFile(filename):
+    file = open(filename, 'r')
+    fileContent = file.read()
+    file.close()
+    return fileContent
 
-def http_post(url, data):
-    conn = httplib.HTTPConnection(url, 9200)
-    headers = {"content-type": "application/json"}
+def writeHits(filename, hits):
+    file = open(filename, 'w')
+    for hit in hits:
+        file.write(json.dumps(hit['_source']))
+        file.write('\n')
+    file.close()
+
+def getHeaders():
+    lines = readFile('headers.txt').splitlines()
+    headers = {}    
+    for line in lines:
+        split = line.split(': ', 1)
+        key = split[0]
+        value = split[1]
+        headers[key] = value
+
+    #print(headers)
+    return headers
+
+def httpGet(host, indexName, data, headers, prettyPrint=False):
+    conn = httplib.HTTPConnection(host, 9200)
     
-    #conn.request('GET', '/test_data/_search', json.dumps(data), hdr)
-    conn.request('GET', '/test_data/_search?pretty=true', data, headers)
+    url = '/' + indexName + '/_search'
+    if prettyPrint:
+        url = url + '?pretty=true'
 
+    conn.request('GET', url, data, headers)
     response = conn.getresponse()
-    print("Code: %d" % response.status)
-    print("Reason: %s" % response.reason)
-    res = response.read()
-    print(res)
-    return res
+
+    #print(response.getheaders())
+
+    content = response.read()
+    content = zlib.decompress(content, 16+zlib.MAX_WBITS)
+
+    if response.status != 200:
+        print("Code: %d" % response.status)
+        print("Reason: %s" % response.reason)
+        print("Response: %s" % content)
+
+    conn.close()
+
+    return content
 
 
-def getQuery(searchAfter=None):
-    queryDef = {
-        "size": 10000,
-        "query": {
-            "match_all": {}
-        },
-        "sort": [{
-            "last_updated": {
-                "order": "desc"
-            },
-            "age": {
-                "order": "desc"
-            }
-        }]
-    }
-
+def getQuery(queryTemplate, searchAfter=None):
     if searchAfter:
-        queryDef['search_after'] = searchAfter
+        queryTemplate['search_after'] = searchAfter
 
-    return json.dumps(queryDef)
+    return json.dumps(queryTemplate)
 
 
-def searchPlain(uri, searchAfter):
-    query = getQuery(searchAfter)
+def searchPlain(host, indexName, queryTemplate, searchAfter):
+    query = getQuery(queryTemplate, searchAfter)
     print(query)
-    header = {'user-agent': 'my-app/0.0.1', 'Content-Type': 'application/json'}
-    response = http_post(uri, query)
-    #response = requests.get(uri, data=query, headers=header)
-    parsed = json.loads(response.text)
-    #print(json.dumps(parsed, indent=2, sort_keys=False))
+    response = httpGet(host, indexName, query, getHeaders())
+    
+    parsed = json.loads(response)
     size = len(parsed['hits']['hits'])
     print("Size: %d" % size)
 
     if size == 0:
-        return None
+        return (None, None)
 
     sorted = parsed['hits']['hits'][size-1]['sort']
-    #print("Sorted %s: " % sorted)
 
-    return sorted
+    return (sorted, parsed['hits']['hits'])
 
 
-queryCount = 1
-print("Query count: %d" % queryCount)
-q = searchPlain("localhost", None)
-while q:
-    queryCount += 1
-    print("Query count: %d" % queryCount)
-    q = searchPlain("http://localhost:9200/test_data/_search", q)
+queryCounter = 1
+searchAfter = None
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-i', '--index', type=str, help='Index name')
+parser.add_argument('-q', '--query', default='query.json', type=str, help='Path to file with query definition in json format, defaults to query.json')
+args = parser.parse_args()
+
+queryDefinition = json.loads(readFile(args.query))
+
+while True:
+    print("Query count: %d" % queryCounter)
+    searchResult = searchPlain("localhost", args.index, queryDefinition, searchAfter)
+    searchAfter = searchResult[0]
+
+    if searchAfter == None:
+        break
+
+    filename= './dumps/dump_' + '{:03d}'.format(queryCounter) + '_' + '_'.join(map(str, searchAfter))
+    writeHits(filename, searchResult[1])
+
+    queryCounter += 1
