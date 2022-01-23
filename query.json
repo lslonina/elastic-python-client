@@ -1,0 +1,14 @@
+{
+    "size": 10000,
+    "query": {
+        "match_all": {}
+    },
+    "sort": [{
+        "last_updated": {
+            "order": "desc"
+        },
+        "age": {
+            "order": "desc"
+        }
+    }]
+}
